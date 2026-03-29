@@ -7,7 +7,11 @@
 #   - Script package_app.sh listo para usar
 #
 # Uso:
-#   ./create_app.sh <nombre_app> [--lib <nombre_lib>]
+#   ./create_app.sh <nombre_app> [--lib <nombre_lib>] \
+#                                [--core-id <id>] [--platform <nombre>]
+#
+# Si --core-id o --platform no se proporcionan, se preguntará
+# de forma interactiva (con valores por defecto para compatibilidad).
 #
 # ──────────────────────────────────────────────────────────────────
 set -e
@@ -30,12 +34,24 @@ header()  { echo -e "\n${CYN}══ $* ══${RST}"; }
 # ── Argumentos ────────────────────────────────────────────────────
 APP_NAME=""
 LIB_NAME=""
+CORE_ID=""
+PLATFORM=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --lib)
             [[ -n "$2" ]] || error "--lib requiere un nombre"
             LIB_NAME="$2"
+            shift 2
+            ;;
+        --core-id)
+            [[ -n "$2" ]] || error "--core-id requiere un valor"
+            CORE_ID="$2"
+            shift 2
+            ;;
+        --platform)
+            [[ -n "$2" ]] || error "--platform requiere un valor"
+            PLATFORM="$2"
             shift 2
             ;;
         -*)
@@ -49,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$APP_NAME" ]] || error "Uso: $0 <nombre_app> [--lib <nombre_lib>]"
+[[ -n "$APP_NAME" ]] || error "Uso: $0 <nombre_app> [--lib <nombre_lib>] [--core-id <id>] [--platform <nombre>]"
 
 [[ "$APP_NAME" =~ ^[a-zA-Z0-9_]+$ ]] || \
     error "El nombre solo puede contener letras, números y guiones bajos"
@@ -87,11 +103,29 @@ LIB_SDK_REL=""
 [[ -n "$LIB_NAME" ]] && \
     LIB_SDK_REL="$(python3 -c "import os; print(os.path.relpath('$SDK_ABS', '$APP_DIR/$LIB_NAME'))")"
 
+# ── Preguntar Core ID si no se pasó por argumento ─────────────────
+DEFAULT_CORE_ID="ThinkElastic.openfpgaOS"
+if [[ -z "$CORE_ID" ]]; then
+    ask "Core ID (p.e., $DEFAULT_CORE_ID): "
+    read -r CORE_ID
+    [[ -z "$CORE_ID" ]] && CORE_ID="$DEFAULT_CORE_ID"
+fi
+
+# ── Preguntar Platform si no se pasó por argumento ────────────────
+DEFAULT_PLATFORM="openfpgaos"
+if [[ -z "$PLATFORM" ]]; then
+    ask "Platform name (p.e., $DEFAULT_PLATFORM): "
+    read -r PLATFORM
+    [[ -z "$PLATFORM" ]] && PLATFORM="$DEFAULT_PLATFORM"
+fi
+
 echo ""
-info "App    : $APP_NAME"
-info "SDK    : $(realpath --relative-to="$SCRIPT_DIR" "$SDK_ABS")"
-[[ -n "$LIB_NAME" ]] && info "Lib    : $LIB_NAME"
-info "Destino: src/$APP_NAME/"
+info "App      : $APP_NAME"
+info "Core ID  : $CORE_ID"
+info "Platform : $PLATFORM"
+info "SDK      : $(realpath --relative-to="$SCRIPT_DIR" "$SDK_ABS")"
+[[ -n "$LIB_NAME" ]] && info "Lib      : $LIB_NAME"
+info "Destino  : src/$APP_NAME/"
 
 # ── Comprobar si app ya existe ────────────────────────────────────
 [[ -d "$APP_DIR" ]] && error "Ya existe src/$APP_NAME/"
@@ -342,12 +376,14 @@ cat >> "$ROOT_MK" << MAKEFILE
 # ── App (override: make APP=otra_app) ────────────────────────────
 APP ?= $APP_NAME
 
+# ── Identidad del core / plataforma ──────────────────────────────
+CORE_ID  = $CORE_ID
+PLATFORM = $PLATFORM
+
 MAKEFILE
 
 cat >> "$ROOT_MK" << 'MAKEFILE'
 # ── Paths ────────────────────────────────────────────────────────
-CORE_ID      = ThinkElastic.openfpgaOS
-PLATFORM     = openfpgaos
 RELEASE      = build/sdk
 REL_CORE     = $(RELEASE)/Cores/$(CORE_ID)
 REL_ASSETS   = $(RELEASE)/Assets/$(PLATFORM)/common
@@ -515,7 +551,10 @@ echo "  Output  : $OUTPUT_ZIP"
 echo
 
 # ── Verificar ELF ─────────────────────────────────────────────────
-REL_ASSETS="$BUILD/Assets/openfpgaos/common"
+PLATFORM=$(grep -E '^PLATFORM\s*=' "$SDK_DIR/Makefile" 2>/dev/null \
+    | head -1 | sed 's/^PLATFORM\s*=\s*//' | tr -d '[:space:]')
+[ -z "$PLATFORM" ] && PLATFORM="openfpgaos"
+REL_ASSETS="$BUILD/Assets/$PLATFORM/common"
 if [ ! -f "$REL_ASSETS/${APP_NAME}.elf" ]; then
     echo -e "${RED}Error: ${APP_NAME}.elf no encontrado en $REL_ASSETS/${RESET}"
     exit 1
