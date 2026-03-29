@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
 # ── create_app.sh ─────────────────────────────────────────────────
-# Crea una app standalone completa para openfpgaOS SDK:
-#   - Estructura src/<app>/ con Makefile y fuentes de ejemplo
-#   - Opcionalmente una librería estática src/<app>/<lib>/
-#   - Makefile raíz apuntando a la app
-#   - Script package_app.sh listo para usar
+# Unified openfpgaOS SDK Application Creator
 #
-# Uso:
-#   ./create_app.sh <nombre_app> [--lib <nombre_lib>] \
-#                                [--core-id <id>] [--platform <nombre>]
+# Merges create_app.sh + scripts/customize.sh into a single workflow:
+#   Phase 1 — Collect app metadata (interactive or via flags)
+#   Phase 2 — Create src/<app>/ with stub main.c and Makefile
+#   Phase 3 — Compile the application ELF
+#   Phase 4 — Generate app.conf, core.json, data.json, platform.json
+#              and copy runtime files to the output directory
 #
-# Si --core-id o --platform no se proporcionan, se preguntará
-# de forma interactiva (con valores por defecto para compatibilidad).
+# Usage (interactive):
+#   ./create_app.sh
 #
+# Usage (non-interactive / batch):
+#   ./create_app.sh --batch \
+#       --name "C++ Raytracer The Next Week" \
+#       --short RaytracerTNW \
+#       --author RndMnkIII \
+#       --platform raytracertnw \
+#       --description "Ray tracing demo app" \
+#       --version 0.1 \
+#       --date 2026-03-29 \
+#       --output dist/RaytracerTNW
+#
+# Run ./create_app.sh --help for the full option list.
 # ──────────────────────────────────────────────────────────────────
 set -e
 
-# ── Colores ───────────────────────────────────────────────────────
+# ── Color helpers ─────────────────────────────────────────────────
 RED='\033[0;31m'
 GRN='\033[0;32m'
 YLW='\033[0;33m'
@@ -27,131 +38,265 @@ RST='\033[0m'
 info()    { echo -e "${BLU}[info]${RST}  $*"; }
 ok()      { echo -e "${GRN}[ok]${RST}    $*"; }
 warn()    { echo -e "${YLW}[warn]${RST}  $*"; }
-error()   { echo -e "${RED}[error]${RST} $*"; exit 1; }
-ask()     { echo -e "${CYN}[?]${RST}     $*"; }
+error()   { echo -e "${RED}[error]${RST} $*" >&2; exit 1; }
 header()  { echo -e "\n${CYN}══ $* ══${RST}"; }
 
-# ── Argumentos ────────────────────────────────────────────────────
-APP_NAME=""
-LIB_NAME=""
-CORE_ID=""
+# ── Defaults ──────────────────────────────────────────────────────
+NAME=""
+SHORT=""
+AUTHOR="ThinkElastic"
 PLATFORM=""
+DESCRIPTION=""
+VERSION="1.0.0"
+DATE=$(date +%Y-%m-%d)
+OUTPUT=""
+LIB_NAME=""
+DATA_FILES=()
+SAVES=10
+SAVE_SIZE="0x40000"
+ICON=""
+BATCH=0
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME="$SCRIPT_DIR/runtime"
+BITSTREAM="$RUNTIME/bitstream.rbf_r"
+OS_BIN="$RUNTIME/os.bin"
+LOADER="$RUNTIME/loader.bin"
+
+# ── Parse command-line flags ──────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --lib)
-            [[ -n "$2" ]] || error "--lib requiere un nombre"
-            LIB_NAME="$2"
-            shift 2
+        --batch)        BATCH=1; shift ;;
+        --name)         [[ -n "$2" ]] || error "--name requires a value"; NAME="$2"; shift 2 ;;
+        --short)        [[ -n "$2" ]] || error "--short requires a value"; SHORT="$2"; shift 2 ;;
+        --author)       [[ -n "$2" ]] || error "--author requires a value"; AUTHOR="$2"; shift 2 ;;
+        --platform)     [[ -n "$2" ]] || error "--platform requires a value"; PLATFORM="$2"; shift 2 ;;
+        --description)  [[ -n "$2" ]] || error "--description requires a value"; DESCRIPTION="$2"; shift 2 ;;
+        --version)      [[ -n "$2" ]] || error "--version requires a value"; VERSION="$2"; shift 2 ;;
+        --date)         [[ -n "$2" ]] || error "--date requires a value"; DATE="$2"; shift 2 ;;
+        --data)         [[ -n "$2" ]] || error "--data requires a path"; DATA_FILES+=("$2"); shift 2 ;;
+        --output)       [[ -n "$2" ]] || error "--output requires a directory"; OUTPUT="$2"; shift 2 ;;
+        --lib)          [[ -n "$2" ]] || error "--lib requires a name"; LIB_NAME="$2"; shift 2 ;;
+        --saves)        [[ -n "$2" ]] || error "--saves requires a number"; SAVES="$2"; shift 2 ;;
+        --save-size)    [[ -n "$2" ]] || error "--save-size requires a value"; SAVE_SIZE="$2"; shift 2 ;;
+        --icon)         [[ -n "$2" ]] || error "--icon requires a path"; ICON="$2"; shift 2 ;;
+        --bitstream)    [[ -n "$2" ]] || error "--bitstream requires a path"; BITSTREAM="$2"; shift 2 ;;
+        --os-bin)       [[ -n "$2" ]] || error "--os-bin requires a path"; OS_BIN="$2"; shift 2 ;;
+        --loader)       [[ -n "$2" ]] || error "--loader requires a path"; LOADER="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: $0 [--batch] [options]"
+            echo ""
+            echo "  Interactive mode (default) prompts for each parameter."
+            echo "  Use --batch for scripted/CI usage with all parameters via flags."
+            echo ""
+            echo "Metadata flags:"
+            echo "  --name NAME           Full application display name"
+            echo "  --short SHORT         Short name, no spaces (used as directory name)"
+            echo "  --author AUTHOR       Core author identifier [ThinkElastic]"
+            echo "  --platform PLATFORM   Platform ID (lowercase, no spaces)"
+            echo "  --description DESC    Application-specific description"
+            echo "  --version VERSION     Initial version string [1.0.0]"
+            echo "  --date DATE           Release date YYYY-MM-DD [today]"
+            echo "  --data PATH           Additional data file (repeatable)"
+            echo "  --output DIR          Output directory [dist/<SHORT>]"
+            echo ""
+            echo "Optional source/library flags:"
+            echo "  --lib NAME            Create a bundled static library src/<app>/<lib>/"
+            echo ""
+            echo "Runtime/packaging flags:"
+            echo "  --saves N             Number of save slots [10]"
+            echo "  --save-size HEX       Max save size per slot [0x40000]"
+            echo "  --icon PATH           Core icon file (.bin)"
+            echo "  --bitstream PATH      Bitstream file [runtime/bitstream.rbf_r]"
+            echo "  --os-bin PATH         OS binary [runtime/os.bin]"
+            echo "  --loader PATH         Chip32 loader [runtime/loader.bin]"
+            exit 0
             ;;
-        --core-id)
-            [[ -n "$2" ]] || error "--core-id requiere un valor"
-            CORE_ID="$2"
-            shift 2
-            ;;
-        --platform)
-            [[ -n "$2" ]] || error "--platform requiere un valor"
-            PLATFORM="$2"
-            shift 2
-            ;;
-        -*)
-            error "Opción desconocida: $1"
-            ;;
-        *)
-            [[ -z "$APP_NAME" ]] || error "Nombre de app duplicado: $1"
-            APP_NAME="$1"
-            shift
-            ;;
+        *) error "Unknown option: $1" ;;
     esac
 done
 
-[[ -n "$APP_NAME" ]] || error "Uso: $0 <nombre_app> [--lib <nombre_lib>] [--core-id <id>] [--platform <nombre>]"
+# ── Generate platform JSON ────────────────────────────────────────
+generate_platform_json() {
+    local dest="$1"
+    cat > "$dest" << PLATJSON
+{
+    "platform": {
+        "category": "Computer",
+        "name": "$NAME",
+        "year": $(date +%Y),
+        "manufacturer": "$AUTHOR"
+    }
+}
+PLATJSON
+    ok "Generated platform: ${PLATFORM}.json"
+}
 
-[[ "$APP_NAME" =~ ^[a-zA-Z0-9_]+$ ]] || \
-    error "El nombre solo puede contener letras, números y guiones bajos"
-[[ -n "$LIB_NAME" ]] && { [[ "$LIB_NAME" =~ ^[a-zA-Z0-9_]+$ ]] || \
-    error "El nombre de la lib solo puede contener letras, números y guiones bajos"; }
-
-# ── Rutas base ────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="$SCRIPT_DIR/src/$APP_NAME"
-ROOT_MK="$SCRIPT_DIR/Makefile"
-PKG_SH="$SCRIPT_DIR/package_app.sh"
-
-# ── Localizar SDK ─────────────────────────────────────────────────
+# ── Locate SDK ────────────────────────────────────────────────────
 SDK_ABS="$(find "$SCRIPT_DIR/src" -maxdepth 2 -name "sdk.mk" 2>/dev/null \
-    | head -1 | xargs dirname 2>/dev/null)"
-[[ -n "$SDK_ABS" ]] || error "No se encuentra sdk.mk bajo $SCRIPT_DIR/src/. ¿Estás en la raíz del proyecto?"
+    | head -1 | xargs -I{} dirname {} 2>/dev/null)"
+[[ -n "$SDK_ABS" ]] || error "sdk.mk not found under $SCRIPT_DIR/src/. Are you in the project root?"
 
-SDK_REL="$(python3 -c "import os; print(os.path.relpath('$SDK_ABS', '$APP_DIR'))")"
+# ── Derive short name helper ──────────────────────────────────────
+derive_short() {
+    echo "$1" | sed 's/[^a-zA-Z0-9]//g'
+}
 
-# ── Preguntar librería si no se pasó por argumento ────────────────
-header "Configuración"
+# Regex for valid short names and library names (letters, digits, underscores)
+VALID_ID_PATTERN='^[a-zA-Z0-9_]+$'
 
-if [[ -z "$LIB_NAME" ]]; then
-    ask "¿La app incluye una librería estática propia? [s/N]"
-    read -r ans
-    if [[ "$ans" =~ ^[sS]$ ]]; then
-        ask "Nombre de la librería:"
-        read -r LIB_NAME
-        [[ "$LIB_NAME" =~ ^[a-zA-Z0-9_]+$ ]] || \
-            error "El nombre de la lib solo puede contener letras, números y guiones bajos"
+# ── Prompt helper (with optional default) ─────────────────────────
+ask_prompt() {
+    local prompt="$1"
+    local default="$2"
+    local result
+    if [[ -n "$default" ]]; then
+        read -rp "${CYN}[?]${RST}     $prompt [$default]: " result
+        echo "${result:-$default}"
+    else
+        read -rp "${CYN}[?]${RST}     $prompt: " result
+        echo "$result"
     fi
+}
+
+# ── Validate file exists ──────────────────────────────────────────
+check_file() {
+    local path="$1"
+    local label="$2"
+    if [[ -f "$path" ]]; then
+        local size
+        size=$(wc -c < "$path" | tr -d ' ')
+        ok "$label: $path ($size bytes)"
+        return 0
+    else
+        warn "$label: $path not found"
+        return 1
+    fi
+}
+
+# ══════════════════════════════════════════════════════════════════
+# PHASE 1 — Collect metadata
+# ══════════════════════════════════════════════════════════════════
+header "Phase 1 — App Metadata"
+
+if [[ $BATCH -eq 0 ]]; then
+    NAME=$(ask_prompt "Full application name (e.g. \"C++ Raytracer The Next Week\")" "$NAME")
+    [[ -z "$NAME" ]] && error "Name is required."
+
+    default_short=$(derive_short "$NAME")
+    SHORT=$(ask_prompt "Short name, no spaces (e.g. \"RaytracerTNW\")" "${SHORT:-$default_short}")
+    [[ -z "$SHORT" ]] && error "Short name is required."
+
+    AUTHOR=$(ask_prompt "Author identifier (e.g. \"RndMnkIII\")" "$AUTHOR")
+
+    [[ -z "$PLATFORM" ]] && PLATFORM=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
+    PLATFORM=$(ask_prompt "Platform ID, lowercase (e.g. \"raytracertnw\")" "$PLATFORM")
+
+    DESCRIPTION=$(ask_prompt "Application description" "${DESCRIPTION:-$NAME on openfpgaOS}")
+
+    VERSION=$(ask_prompt "Initial version" "$VERSION")
+    DATE=$(ask_prompt "Release date (YYYY-MM-DD)" "$DATE")
+
+    echo
+    echo "Data files (one per line, empty line to finish):"
+    DATA_FILES=()
+    idx=1
+    while true; do
+        df=$(ask_prompt "  [$idx] data file path" "")
+        [[ -z "$df" ]] && break
+        if [[ -f "$df" ]]; then
+            ok "Found $(basename "$df")"
+            DATA_FILES+=("$df")
+            idx=$((idx + 1))
+        else
+            warn "$df not found, skipping"
+        fi
+    done
+    echo "  ${#DATA_FILES[@]} data file(s) added."
+
+    echo
+    SAVES=$(ask_prompt "Number of save slots (0-10)" "$SAVES")
+    if [[ $SAVES -gt 0 ]]; then
+        SAVE_SIZE=$(ask_prompt "Max save size per slot" "$SAVE_SIZE")
+    fi
+
+    ICON=$(ask_prompt "Core icon path (.bin, optional — press Enter to skip)" "$ICON")
+    OUTPUT=$(ask_prompt "Output directory" "${OUTPUT:-dist/$SHORT}")
+
+    # Lib prompt
+    read -rp "${CYN}[?]${RST}     Include a bundled static library? [y/N] " ans
+    if [[ "$ans" =~ ^[yY]$ ]]; then
+        read -rp "${CYN}[?]${RST}     Library name: " LIB_NAME
+        [[ "$LIB_NAME" =~ $VALID_ID_PATTERN ]] || \
+            error "Library name may only contain letters, digits, and underscores"
+    fi
+
+    # Summary
+    echo
+    echo -e "${CYN}--- Summary ---${RST}"
+    echo "  Name:        $NAME"
+    echo "  Short:       $SHORT"
+    echo "  Author:      $AUTHOR"
+    echo "  Platform:    $PLATFORM"
+    echo "  Description: $DESCRIPTION"
+    echo "  Version:     $VERSION"
+    echo "  Date:        $DATE"
+    for df in "${DATA_FILES[@]}"; do echo "  Data:        $(basename "$df")"; done
+    echo "  Saves:       $SAVES × $SAVE_SIZE"
+    echo "  Output:      $OUTPUT"
+    [[ -n "$LIB_NAME" ]] && echo "  Library:     $LIB_NAME"
+    echo
+
+    read -rp "Proceed? [Y/n] " confirm
+    [[ "$confirm" =~ ^[Nn] ]] && { echo "Aborted."; exit 0; }
 fi
 
+# ── Validate required inputs ──────────────────────────────────────
+[[ -z "$NAME" ]]    && error "--name is required in batch mode"
+[[ -z "$SHORT" ]]   && SHORT=$(derive_short "$NAME")
+[[ -z "$PLATFORM" ]] && PLATFORM=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
+[[ -z "$OUTPUT" ]]  && OUTPUT="dist/$SHORT"
+[[ -z "$DESCRIPTION" ]] && DESCRIPTION="$NAME on openfpgaOS"
+[[ "$SHORT" =~ $VALID_ID_PATTERN ]] || \
+    error "Short name may only contain letters, digits, and underscores: '$SHORT'"
+[[ -n "$LIB_NAME" ]] && { [[ "$LIB_NAME" =~ $VALID_ID_PATTERN ]] || \
+    error "Library name may only contain letters, digits, and underscores: '$LIB_NAME'"; }
+
+SNAME=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
+CORE_ID="${AUTHOR}.${SHORT}"
+APP_DIR="$SCRIPT_DIR/src/$SNAME"
+SDK_REL="$(python3 -c "import os; print(os.path.relpath('$SDK_ABS', '$APP_DIR'))")"
 LIB_SDK_REL=""
 [[ -n "$LIB_NAME" ]] && \
     LIB_SDK_REL="$(python3 -c "import os; print(os.path.relpath('$SDK_ABS', '$APP_DIR/$LIB_NAME'))")"
+ELF_NAME="${SNAME}.elf"
 
-# ── Preguntar Core ID si no se pasó por argumento ─────────────────
-DEFAULT_CORE_ID="ThinkElastic.openfpgaOS"
-if [[ -z "$CORE_ID" ]]; then
-    ask "Core ID (p.e., $DEFAULT_CORE_ID): "
-    read -r CORE_ID
-    [[ -z "$CORE_ID" ]] && CORE_ID="$DEFAULT_CORE_ID"
-fi
-
-# ── Preguntar Platform si no se pasó por argumento ────────────────
-DEFAULT_PLATFORM="openfpgaos"
-if [[ -z "$PLATFORM" ]]; then
-    ask "Platform name (p.e., $DEFAULT_PLATFORM): "
-    read -r PLATFORM
-    [[ -z "$PLATFORM" ]] && PLATFORM="$DEFAULT_PLATFORM"
-fi
-
-echo ""
-info "App      : $APP_NAME"
-info "Core ID  : $CORE_ID"
-info "Platform : $PLATFORM"
-info "SDK      : $(realpath --relative-to="$SCRIPT_DIR" "$SDK_ABS")"
-[[ -n "$LIB_NAME" ]] && info "Lib      : $LIB_NAME"
-info "Destino  : src/$APP_NAME/"
-
-# ── Comprobar si app ya existe ────────────────────────────────────
-[[ -d "$APP_DIR" ]] && error "Ya existe src/$APP_NAME/"
+info "App source : src/$SNAME/"
+info "Core ID   : $CORE_ID"
+info "Platform  : $PLATFORM"
+info "Output    : $OUTPUT"
 
 # ══════════════════════════════════════════════════════════════════
-# 1. ESTRUCTURA DE LA APP
+# PHASE 2 — Create directory structure
 # ══════════════════════════════════════════════════════════════════
-header "Creando src/$APP_NAME/"
+header "Phase 2 — Directory Structure"
 
-mkdir -p "$APP_DIR"
-[[ -n "$LIB_NAME" ]] && mkdir -p "$APP_DIR/$LIB_NAME/include" "$APP_DIR/$LIB_NAME/src"
+if [[ ! -d "$APP_DIR" ]]; then
+    mkdir -p "$APP_DIR"
+    [[ -n "$LIB_NAME" ]] && mkdir -p "$APP_DIR/$LIB_NAME/include" "$APP_DIR/$LIB_NAME/src"
 
-# ── Makefile de la app ────────────────────────────────────────────
-if [[ -n "$LIB_NAME" ]]; then
+    # ── Makefile (with lib) ───────────────────────────────────────
+    if [[ -n "$LIB_NAME" ]]; then
 cat > "$APP_DIR/Makefile" << MAKEFILE
-# src/$APP_NAME/Makefile
+# src/$SNAME/Makefile
 
 SDK_DIR = $SDK_REL
 
-# ── Fuentes de la app ─────────────────────────────────────────────
-SRCS     = utilidades.c
-SRCS_CXX = main.cpp
+SRCS     = \$(wildcard *.c)
+SRCS_CXX = \$(wildcard *.cpp)
 
-# ── Librería estática ─────────────────────────────────────────────
 LIB     = $LIB_NAME/lib${LIB_NAME}.a
-LIB_INC = -I $LIB_NAME/include
+LIB_INC = -I$LIB_NAME/include
 
 include \$(SDK_DIR)/sdk.mk
 AR = \$(CROSS)ar
@@ -162,11 +307,11 @@ ALL_CXXFLAGS += \$(LIB_INC)
 \$(LIB):
 	\$(MAKE) -C $LIB_NAME SDK_DIR=\$(CURDIR)/$SDK_REL
 
-app.elf: \$(OBJS) \$(LIB) \$(APP_LD)
-	\$(LD) \$(ALL_LDFLAGS) -o \$@ \$(OBJS) \$(LIB) \$(LIBGCC)
-
 \$(CRT_DIR)/start.o: \$(CRT_DIR)/start.S
 	\$(AS) \$(ASFLAGS) -c -o \$@ \$<
+
+app.elf: \$(OBJS) \$(LIB) \$(APP_LD)
+	\$(LD) \$(ALL_LDFLAGS) -o \$@ \$(OBJS) \$(LIB) \$(LIBGCC)
 
 all: \$(LIB) app.elf
 	\$(SIZE) app.elf
@@ -176,23 +321,23 @@ clean: sdk-clean
 
 .PHONY: all clean
 MAKEFILE
-else
+    else
+# ── Makefile (no lib) ─────────────────────────────────────────────
 cat > "$APP_DIR/Makefile" << MAKEFILE
-# src/$APP_NAME/Makefile
+# src/$SNAME/Makefile
 
 SDK_DIR = $SDK_REL
 
-# ── Fuentes de la app ─────────────────────────────────────────────
-SRCS     = utilidades.c
-SRCS_CXX = main.cpp
+SRCS     = \$(wildcard *.c)
+SRCS_CXX = \$(wildcard *.cpp)
 
 include \$(SDK_DIR)/sdk.mk
 
-app.elf: \$(OBJS) \$(APP_LD)
-	\$(LD) \$(ALL_LDFLAGS) -o \$@ \$(OBJS) \$(LIBGCC)
-
 \$(CRT_DIR)/start.o: \$(CRT_DIR)/start.S
 	\$(AS) \$(ASFLAGS) -c -o \$@ \$<
+
+app.elf: \$(OBJS) \$(APP_LD)
+	\$(LD) \$(ALL_LDFLAGS) -o \$@ \$(OBJS) \$(LIBGCC)
 
 all: app.elf
 	\$(SIZE) app.elf
@@ -201,18 +346,18 @@ clean: sdk-clean
 
 .PHONY: all clean
 MAKEFILE
-fi
-ok "src/$APP_NAME/Makefile"
+    fi
+    ok "src/$SNAME/Makefile"
 
-# ── Makefile de la lib ────────────────────────────────────────────
-if [[ -n "$LIB_NAME" ]]; then
+    # ── Lib Makefile ──────────────────────────────────────────────
+    if [[ -n "$LIB_NAME" ]]; then
 cat > "$APP_DIR/$LIB_NAME/Makefile" << MAKEFILE
-# src/$APP_NAME/$LIB_NAME/Makefile
+# src/$SNAME/$LIB_NAME/Makefile
 
 SDK_DIR = $LIB_SDK_REL
 
-SRCS     = src/modulo1.c src/modulo2.c
-SRCS_CXX = src/modulo3.cpp
+SRCS     = src/module1.c src/module2.c
+SRCS_CXX = src/module3.cpp
 OBJS     = \$(SRCS:.c=.o) \$(SRCS_CXX:.cpp=.o)
 LIB      = lib${LIB_NAME}.a
 
@@ -233,385 +378,357 @@ clean:
 
 .PHONY: clean
 MAKEFILE
-ok "src/$APP_NAME/$LIB_NAME/Makefile"
-fi
+        ok "src/$SNAME/$LIB_NAME/Makefile"
 
-# ── Fuentes de ejemplo — app ──────────────────────────────────────
-cat > "$APP_DIR/main.cpp" << CPP
-// src/$APP_NAME/main.cpp
-#include <of.h>
-$([ -n "$LIB_NAME" ] && echo "#include \"${LIB_NAME}.h\"")
-
-int main(void) {
-    of_video_clear(0x000000);
-
-    // TODO: inicializa tu app aquí
-
-    while (1) {
-        of_input_t input = of_input_read();
-
-        if (input.buttons & OF_BTN_MENU)
-            break;
-
-        // TODO: lógica principal
-
-        of_video_flip();
-    }
-
-    return 0;
-}
-CPP
-ok "src/$APP_NAME/main.cpp"
-
-cat > "$APP_DIR/utilidades.c" << CC
-// src/$APP_NAME/utilidades.c
-#include "utilidades.h"
-
-// TODO: implementa tus utilidades aquí
-CC
-ok "src/$APP_NAME/utilidades.c"
-
-cat > "$APP_DIR/utilidades.h" << HH
-// src/$APP_NAME/utilidades.h
-#pragma once
-
-// TODO: declara tus utilidades aquí
-HH
-ok "src/$APP_NAME/utilidades.h"
-
-# ── Fuentes de ejemplo — lib ──────────────────────────────────────
-if [[ -n "$LIB_NAME" ]]; then
-cat > "$APP_DIR/$LIB_NAME/include/${LIB_NAME}.h" << HH
-// src/$APP_NAME/$LIB_NAME/include/${LIB_NAME}.h
+        # Lib header stub
+        cat > "$APP_DIR/$LIB_NAME/include/${LIB_NAME}.h" << HH
+// src/$SNAME/$LIB_NAME/include/${LIB_NAME}.h
 #pragma once
 
 void ${LIB_NAME}_init(void);
 void ${LIB_NAME}_update(void);
 HH
-ok "src/$APP_NAME/$LIB_NAME/include/${LIB_NAME}.h"
+        ok "src/$SNAME/$LIB_NAME/include/${LIB_NAME}.h"
 
-cat > "$APP_DIR/$LIB_NAME/src/modulo1.c" << CC
-// src/$APP_NAME/$LIB_NAME/src/modulo1.c
+        # Lib source stubs
+        cat > "$APP_DIR/$LIB_NAME/src/module1.c" << CC
+// src/$SNAME/$LIB_NAME/src/module1.c
 #include "${LIB_NAME}.h"
 
 void ${LIB_NAME}_init(void) {
-    // TODO: inicialización
+    /* TODO: initialization */
 }
 CC
-ok "src/$APP_NAME/$LIB_NAME/src/modulo1.c"
-
-cat > "$APP_DIR/$LIB_NAME/src/modulo2.c" << CC
-// src/$APP_NAME/$LIB_NAME/src/modulo2.c
+        cat > "$APP_DIR/$LIB_NAME/src/module2.c" << CC
+// src/$SNAME/$LIB_NAME/src/module2.c
 #include "${LIB_NAME}.h"
 
 void ${LIB_NAME}_update(void) {
-    // TODO: lógica de actualización
+    /* TODO: per-frame logic */
 }
 CC
-ok "src/$APP_NAME/$LIB_NAME/src/modulo2.c"
-
-cat > "$APP_DIR/$LIB_NAME/src/modulo3.cpp" << CPP
-// src/$APP_NAME/$LIB_NAME/src/modulo3.cpp
+        cat > "$APP_DIR/$LIB_NAME/src/module3.cpp" << CPP
+// src/$SNAME/$LIB_NAME/src/module3.cpp
 #include "${LIB_NAME}.h"
 
-// TODO: módulo C++ de $LIB_NAME
+/* TODO: C++ module for $LIB_NAME */
 CPP
-ok "src/$APP_NAME/$LIB_NAME/src/modulo3.cpp"
+        ok "src/$SNAME/$LIB_NAME/src/ (module stubs)"
+    fi
+
+    # ── Stub main.c ───────────────────────────────────────────────
+    LIB_INCLUDE=""
+    [[ -n "$LIB_NAME" ]] && LIB_INCLUDE="#include \"${LIB_NAME}.h\""
+    cat > "$APP_DIR/main.c" << STUB
+/*
+ * $NAME — openfpgaOS stub app
+ *
+ * Edit this file and run: make -C src/$SNAME
+ */
+#include "of.h"
+#include <stdio.h>
+#include <string.h>
+$LIB_INCLUDE
+
+int main(void) {
+    of_video_init();
+
+    /* Simple grayscale palette */
+    for (int i = 0; i < 256; i++)
+        of_video_palette(i, (i << 16) | (i << 8) | i);
+
+    /* Gradient demo */
+    uint8_t *fb = of_video_surface();
+    for (int y = 0; y < 240; y++)
+        memset(&fb[y * 320], (uint8_t)y, 320);
+
+    of_video_flip();
+
+    printf("$NAME\\n");
+    printf("Press any button...\\n");
+
+    while (1) {
+        of_input_poll();
+        if (of_btn(OF_BTN_MENU))
+            break;
+        of_delay_ms(16);
+    }
+
+    return 0;
+}
+STUB
+    ok "src/$SNAME/main.c"
+else
+    ok "App source already exists: src/$SNAME/ (skipping stub creation)"
 fi
 
-# ── Instance JSON ─────────────────────────────────────────────────
-cat > "$APP_DIR/${APP_NAME}.json" << JSON
+# ── Create output directory ───────────────────────────────────────
+mkdir -p "$OUTPUT"
+ok "Output directory: $OUTPUT"
+
+# ══════════════════════════════════════════════════════════════════
+# PHASE 3 — Compile the ELF
+# ══════════════════════════════════════════════════════════════════
+header "Phase 3 — Compile"
+
+info "Building ELF from src/$SNAME/ ..."
+if make -C "$APP_DIR"; then
+    # Rename app.elf → <sname>.elf
+    if [[ -f "$APP_DIR/app.elf" ]]; then
+        mv "$APP_DIR/app.elf" "$APP_DIR/$ELF_NAME"
+    fi
+    if [[ -f "$APP_DIR/$ELF_NAME" ]]; then
+        ok "Built $ELF_NAME"
+    else
+        error "Compilation succeeded but $ELF_NAME not found in src/$SNAME/"
+    fi
+else
+    error "Compilation failed — fix errors in src/$SNAME/ then re-run"
+fi
+ELF="$APP_DIR/$ELF_NAME"
+
+# ── Check required runtime files ─────────────────────────────────
+echo
+info "Checking runtime files..."
+errors=0
+check_file "$ELF"        "ELF"        || errors=1
+check_file "$BITSTREAM"  "Bitstream"  || errors=$((errors + 1))
+check_file "$OS_BIN"     "os.bin"     || errors=$((errors + 1))
+check_file "$LOADER"     "loader.bin" || errors=$((errors + 1))
+[[ $errors -ne 0 ]] && warn "$errors runtime file(s) missing — dist layout may be incomplete"
+
+# ══════════════════════════════════════════════════════════════════
+# PHASE 4 — Metadata and distribution layout
+# ══════════════════════════════════════════════════════════════════
+header "Phase 4 — Metadata & Distribution"
+
+# ── app.conf ─────────────────────────────────────────────────────
+APP_CONF="$APP_DIR/app.conf"
+cat > "$APP_CONF" << CONF
+NAME=$NAME
+SHORT=$SHORT
+AUTHOR=$AUTHOR
+PLATFORM=$PLATFORM
+DESCRIPTION=$DESCRIPTION
+VERSION=$VERSION
+DATE=$DATE
+CONF
+ok "src/$SNAME/app.conf"
+
+# ── Distribution directory structure ─────────────────────────────
+CORE_DIR="$OUTPUT/Cores/$CORE_ID"
+ASSETS_COMMON="$OUTPUT/Assets/$PLATFORM/common"
+PLATFORMS_DIR="$OUTPUT/Platforms"
+
+mkdir -p "$CORE_DIR" "$ASSETS_COMMON" "$PLATFORMS_DIR/_images"
+
+# ── core.json ─────────────────────────────────────────────────────
+if [[ -f "$CORE_DIR/core.json" ]]; then
+    ok "core.json already exists, skipping"
+else
+cat > "$CORE_DIR/core.json" << ENDJSON
 {
-    "instance": {
+    "core": {
         "magic": "APF_VER_1",
-        "variant_select": {
-            "id": 666,
-            "select": false
+        "metadata": {
+            "platform_ids": ["$PLATFORM"],
+            "shortname": "$SHORT",
+            "description": "$DESCRIPTION",
+            "author": "$AUTHOR",
+            "url": "",
+            "version": "$VERSION",
+            "date_release": "$DATE"
         },
-        "data_slots": [
-                        {
+        "framework": {
+            "target_product": "Analogue Pocket",
+            "version_required": "2.2",
+            "sleep_supported": false,
+            "dock": { "supported": true, "analog_output": false },
+            "hardware": { "link_port": true, "cartridge_adapter": 0 }
+        },
+        "cores": [
+            { "name": "default", "id": 0, "filename": "bitstream.rbf_r", "chip32_vm": "loader.bin" }
+        ]
+    }
+}
+ENDJSON
+    ok "Generated core.json"
+fi
+
+# ── data.json ─────────────────────────────────────────────────────
+if [[ -f "$CORE_DIR/data.json" ]]; then
+    ok "data.json already exists, skipping"
+else
+DATA_SLOTS='[
+            {
                 "id": 1,
-                "filename": "os.bin"
+                "name": "OS Binary",
+                "required": false,
+                "parameters": 0,
+                "filename": "os.bin",
+                "extensions": ["bin"],
+                "deferload": true
             },
             {
                 "id": 2,
-                "filename": "${APP_NAME}..elf"
-            }
+                "name": "Application",
+                "required": false,
+                "parameters": 0,
+                "filename": "'"$ELF_NAME"'",
+                "extensions": ["elf"],
+                "deferload": true
+            }'
+
+# Additional data file slots (ids 3–6)
+slot_id=3
+for df in "${DATA_FILES[@]}"; do
+    ext="${df##*.}"
+    dfname=$(basename "$df")
+    DATA_SLOTS="$DATA_SLOTS,"'
+            {
+                "id": '"$slot_id"',
+                "name": "Data '"$((slot_id - 2))"'",
+                "required": false,
+                "parameters": 0,
+                "filename": "'"$dfname"'",
+                "extensions": ["'"$ext"'"],
+                "deferload": true
+            }'
+    slot_id=$((slot_id + 1))
+    if [[ $slot_id -gt 6 ]]; then
+        warn "Maximum 4 data slots (ids 3–6); ignoring extra --data files"
+        break
+    fi
+done
+
+# Save slots (ids 10+)
+SAVE_ADDR=0x30000000
+for i in $(seq 0 $((SAVES - 1))); do
+    sid=$((10 + i))
+    addr=$(printf "0x%08X" $SAVE_ADDR)
+    DATA_SLOTS="$DATA_SLOTS,"'
+            { "id": '"$sid"', "name": "Save '"$i"'", "required": false, "parameters": "0x85", "nonvolatile": true, "address": "'"$addr"'", "size_maximum": "'"$SAVE_SIZE"'", "filename": "'"${SNAME}_${i}.sav"'", "extensions": ["sav"] }'
+    SAVE_ADDR=$((SAVE_ADDR + 0x40000))
+done
+
+cat > "$CORE_DIR/data.json" << ENDJSON
+{
+    "data": {
+        "magic": "APF_VER_1",
+        "data_slots": $DATA_SLOTS
+        ]
+    }
+}
+ENDJSON
+    ok "Generated data.json ($SAVES save slots)"
+fi
+
+# ── Copy shared JSON configs (audio/video/input/interact/variants) ─
+DIST_DIR=""
+for try in "$SCRIPT_DIR/dist/sdk/core" "$SCRIPT_DIR/dist/sdk" "$RUNTIME/dist" "$SCRIPT_DIR/dist" ../openfpgaOS/dist; do
+    if [[ -f "$try/audio.json" ]]; then
+        DIST_DIR="$try"
+        break
+    fi
+done
+
+if [[ -n "$DIST_DIR" ]]; then
+    for f in audio.json video.json input.json interact.json variants.json; do
+        [[ -f "$DIST_DIR/$f" ]] && cp "$DIST_DIR/$f" "$CORE_DIR/"
+    done
+    ok "Copied shared JSON configs from $DIST_DIR"
+
+    # Platform files
+    if [[ -f "$PLATFORMS_DIR/${PLATFORM}.json" ]]; then
+        ok "Platform JSON already exists, skipping"
+    elif [[ -f "$DIST_DIR/platforms/${PLATFORM}.json" ]]; then
+        cp "$DIST_DIR/platforms/${PLATFORM}.json" "$PLATFORMS_DIR/"
+        [[ -f "$DIST_DIR/platforms/_images/${PLATFORM}.bin" ]] && \
+            cp "$DIST_DIR/platforms/_images/${PLATFORM}.bin" "$PLATFORMS_DIR/_images/"
+        ok "Copied platform files"
+    else
+        generate_platform_json "$PLATFORMS_DIR/${PLATFORM}.json"
+    fi
+else
+    warn "dist/sdk/core/ not found — audio/video/input/interact/variants JSONs not copied"
+
+    # Generate platform JSON when no dist directory available
+    if [[ ! -f "$PLATFORMS_DIR/${PLATFORM}.json" ]]; then
+        generate_platform_json "$PLATFORMS_DIR/${PLATFORM}.json"
+    fi
+fi
+
+# ── Copy runtime files ────────────────────────────────────────────
+if [[ -f "$BITSTREAM" ]]; then
+    cp "$BITSTREAM" "$CORE_DIR/bitstream.rbf_r"
+    ok "Copied bitstream.rbf_r"
+fi
+
+if [[ -f "$LOADER" ]]; then
+    cp "$LOADER" "$CORE_DIR/loader.bin"
+    ok "Copied loader.bin"
+fi
+
+if [[ -f "$OS_BIN" ]]; then
+    cp "$OS_BIN" "$ASSETS_COMMON/os.bin"
+    ok "Copied os.bin"
+fi
+
+cp "$ELF" "$ASSETS_COMMON/$ELF_NAME"
+ok "Copied $ELF_NAME"
+
+for df in "${DATA_FILES[@]}"; do
+    cp "$df" "$ASSETS_COMMON/$(basename "$df")"
+    ok "Copied $(basename "$df")"
+done
+
+# ── Icon ──────────────────────────────────────────────────────────
+if [[ -n "$ICON" && -f "$ICON" ]]; then
+    cp "$ICON" "$CORE_DIR/icon.bin"
+    ok "Copied icon.bin"
+fi
+
+# ── Instance JSON ─────────────────────────────────────────────────
+INSTANCE_JSON="$APP_DIR/${SNAME}.json"
+if [[ ! -f "$INSTANCE_JSON" ]]; then
+    DATA_SLOT_ENTRIES='[
+            { "id": 1, "filename": "os.bin" },
+            { "id": 2, "filename": "'"$ELF_NAME"'" }'
+    islot=3
+    for df in "${DATA_FILES[@]}"; do
+        DATA_SLOT_ENTRIES="$DATA_SLOT_ENTRIES"', { "id": '"$islot"', "filename": "'"$(basename "$df")"'" }'
+        islot=$((islot + 1))
+        [[ $islot -gt 6 ]] && break
+    done
+    cat > "$INSTANCE_JSON" << JSON
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "variant_select": { "id": 666, "select": false },
+        "data_slots": $DATA_SLOT_ENTRIES
         ],
         "display_modes": []
     }
 }
-
 JSON
-ok "src/$APP_NAME/${APP_NAME}.json"
-
-# ══════════════════════════════════════════════════════════════════
-# 2. MAKEFILE RAÍZ
-# ══════════════════════════════════════════════════════════════════
-header "Makefile raíz"
-
-WRITE_MK=1
-if [[ -f "$ROOT_MK" ]]; then
-    ask "Ya existe un Makefile raíz. ¿Sobreescribir? [s/N]"
-    read -r ans
-    [[ "$ans" =~ ^[sS]$ ]] || WRITE_MK=0
-fi
-
-if [[ "$WRITE_MK" == "1" ]]; then
-    [[ -f "$ROOT_MK" ]] && cp "$ROOT_MK" "$ROOT_MK.bak" && info "Backup guardado en Makefile.bak"
-cat > "$ROOT_MK" << 'MAKEFILE'
-# openfpgaOS SDK Makefile
-#
-# Usage:
-#   make                    Build app, create release/
-#   make APP=otra_app       Build a different app
-#   make deploy             Copy release/ to Pocket SD card
-#   make clean              Remove all build artifacts
-#   make core               Build a standalone game core (interactive)
-#   make package            Package game core into a ZIP
-MAKEFILE
-
-cat >> "$ROOT_MK" << MAKEFILE
-
-# ── App (override: make APP=otra_app) ────────────────────────────
-APP ?= $APP_NAME
-
-# ── Identidad del core / plataforma ──────────────────────────────
-CORE_ID  = $CORE_ID
-PLATFORM = $PLATFORM
-
-MAKEFILE
-
-cat >> "$ROOT_MK" << 'MAKEFILE'
-# ── Paths ────────────────────────────────────────────────────────
-RELEASE      = build/sdk
-REL_CORE     = $(RELEASE)/Cores/$(CORE_ID)
-REL_ASSETS   = $(RELEASE)/Assets/$(PLATFORM)/common
-REL_INSTANCE = $(RELEASE)/Assets/$(PLATFORM)/$(CORE_ID)
-REL_PLATFORM = $(RELEASE)/Platforms
-RUNTIME      = runtime
-
-# ── Default target ───────────────────────────────────────────────
-all: app tools release
-
-# ── Build app ────────────────────────────────────────────────────
-app:
-	@echo "Building $(APP)..."
-	$(MAKE) -C src/$(APP) SDK_DIR=$(CURDIR)/src/sdk
-	@[ -f src/$(APP)/app.elf ] && mv src/$(APP)/app.elf src/$(APP)/$(APP).elf 2>/dev/null || true
-
-# ── Create release/ directory ────────────────────────────────────
-release: app
-	@echo "Creating release/..."
-	@mkdir -p $(REL_CORE) $(REL_ASSETS) $(REL_INSTANCE) $(REL_PLATFORM)/_images
-	@cp $(RUNTIME)/bitstream.rbf_r $(REL_CORE)/
-	@cp $(RUNTIME)/loader.bin $(REL_CORE)/
-	@[ -d dist/sdk/core ] && cp dist/sdk/core/*.json dist/sdk/core/*.bin $(REL_CORE)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform ] && cp dist/sdk/platform/*.json $(REL_PLATFORM)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform/_images ] && cp dist/sdk/platform/_images/*.bin $(REL_PLATFORM)/_images/ 2>/dev/null || true
-	@cp $(RUNTIME)/os.bin $(REL_ASSETS)/
-	@cp src/$(APP)/$(APP).elf $(REL_ASSETS)/
-	@find src/$(APP) -maxdepth 1 \( -name "*.mid" -o -name "*.wav" -o -name "*.dat" -o -name "*.png" \) \
-		-exec cp {} "$(REL_ASSETS)/" \; 2>/dev/null || true
-	@[ -f src/$(APP)/$(APP).json ] && cp src/$(APP)/$(APP).json $(REL_INSTANCE)/ || true
-	@echo "Release ready: $(RELEASE)/"
-
-# ── Deploy to SD card ────────────────────────────────────────────
-deploy: release
-	@./scripts/deploy.sh
-
-# ── Build host tools ─────────────────────────────────────────────
-tools:
-	$(MAKE) -C src/tools/phdp
-
-# ── Clean ────────────────────────────────────────────────────────
-clean:
-	$(MAKE) -C src/$(APP) clean
-	$(MAKE) -C src/tools/phdp clean
-	rm -rf build releases
-
-# ── Core packaging ───────────────────────────────────────────────
-core:
-	./scripts/customize.sh
-
-package:
-	./scripts/package.sh
-
-.PHONY: all app tools release deploy clean core package
-MAKEFILE
-    ok "Makefile"
-else
-    warn "Makefile raíz no modificado."
+    ok "src/$SNAME/${SNAME}.json"
 fi
 
 # ══════════════════════════════════════════════════════════════════
-# 3. PACKAGE_APP.SH
+# Final summary
 # ══════════════════════════════════════════════════════════════════
-header "package_app.sh"
+header "Done"
 
-WRITE_PKG=1
-if [[ -f "$PKG_SH" ]]; then
-    ask "Ya existe package_app.sh. ¿Sobreescribir? [s/N]"
-    read -r ans
-    [[ "$ans" =~ ^[sS]$ ]] || WRITE_PKG=0
-fi
-
-if [[ "$WRITE_PKG" == "1" ]]; then
-cat > "$PKG_SH" << 'PKGSH'
-#!/bin/bash
-#
-# openfpgaOS SDK — App Packager
-#
-# Usage:
-#   ./package_app.sh                 Package the default app (APP ?= en Makefile)
-#   ./package_app.sh myapp           Package src/myapp/
-#   APP=myapp ./package_app.sh       Same, via environment variable
-#
-set -e
-
-GREEN='\033[92m'
-CYAN='\033[96m'
-YELLOW='\033[93m'
-RED='\033[91m'
-RESET='\033[0m'
-
-SDK_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# ── Resolver APP: argumento > variable de entorno > default del Makefile ──
-APP_NAME="${1:-${APP:-}}"
-
-if [ -z "$APP_NAME" ]; then
-    APP_NAME=$(grep -E '^APP\s*\?=' "$SDK_DIR/Makefile" 2>/dev/null \
-        | head -1 | sed 's/.*=\s*//' | tr -d '[:space:]')
-    [ -z "$APP_NAME" ] && {
-        echo -e "${RED}Error: no se encuentra APP ?= en el Makefile.${RESET}"
-        exit 1
-    }
-fi
-
-BUILD="$SDK_DIR/build/sdk"
-RELEASES="$SDK_DIR/releases"
-
-echo -e "${CYAN}=== App Packager (APP=$APP_NAME) ===${RESET}"
-
-# ── Verificar que existe src/<app>/ ───────────────────────────────
-if [ ! -d "$SDK_DIR/src/$APP_NAME" ]; then
-    echo -e "${RED}Error: no existe src/$APP_NAME/${RESET}"
-    exit 1
-fi
-
-# ── Build ─────────────────────────────────────────────────────────
-echo "  Building release..."
-make -C "$SDK_DIR" release APP="$APP_NAME"
-
-# ── Verificar build ───────────────────────────────────────────────
-if [ ! -d "$BUILD/Cores" ]; then
-    echo -e "${RED}Error: build/sdk/ no encontrado tras make release.${RESET}"
-    exit 1
-fi
-
-# ── Leer metadatos del core.json ──────────────────────────────────
-CORE_NAME=$(ls "$BUILD/Cores/" 2>/dev/null | head -1)
-[ -z "$CORE_NAME" ] && {
-    echo -e "${RED}Error: no se encuentra ningún core en build/sdk/Cores/.${RESET}"
-    exit 1
-}
-
-CORE_JSON="$BUILD/Cores/$CORE_NAME/core.json"
-[ -f "$CORE_JSON" ] || {
-    echo -e "${RED}Error: $CORE_JSON no encontrado.${RESET}"
-    exit 1
-}
-
-GAME_NAME=$(python3 -c "
-import json
-with open('$CORE_JSON') as f:
-    d = json.load(f)
-print(d['core']['metadata']['description'])
-" 2>/dev/null)
-[ -z "$GAME_NAME" ] && {
-    echo -e "${YELLOW}Warning: no se pudo leer description, usando '$APP_NAME'${RESET}"
-    GAME_NAME="$APP_NAME"
-}
-
-CORE_VERSION=$(python3 -c "
-import json
-with open('$CORE_JSON') as f:
-    d = json.load(f)
-print(d['core']['metadata']['version'])
-" 2>/dev/null)
-[ -z "$CORE_VERSION" ] && {
-    echo -e "${YELLOW}Warning: no se pudo leer version, usando '1.0.0'${RESET}"
-    CORE_VERSION="1.0.0"
-}
-
-OUTPUT_ZIP="$RELEASES/${APP_NAME}-v${CORE_VERSION}.zip"
-echo "  Version : $CORE_VERSION"
-echo "  Output  : $OUTPUT_ZIP"
 echo
-
-# ── Verificar ELF ─────────────────────────────────────────────────
-PLATFORM=$(grep -E '^PLATFORM\s*=' "$SDK_DIR/Makefile" 2>/dev/null \
-    | head -1 | sed 's/^PLATFORM\s*=\s*//' | tr -d '[:space:]')
-[ -z "$PLATFORM" ] && PLATFORM="openfpgaos"
-REL_ASSETS="$BUILD/Assets/$PLATFORM/common"
-if [ ! -f "$REL_ASSETS/${APP_NAME}.elf" ]; then
-    echo -e "${RED}Error: ${APP_NAME}.elf no encontrado en $REL_ASSETS/${RESET}"
-    exit 1
-fi
-
-# ── Generar INSTALL.txt ───────────────────────────────────────────
-cat > "$BUILD/INSTALL.txt" << EOF
-$GAME_NAME
-$(printf '=%.0s' $(seq 1 ${#GAME_NAME}))
-Version: $CORE_VERSION
-
-Installation:
-1. Extract this ZIP to your Analogue Pocket SD card root
-2. Merge with existing folders if prompted
-3. The app will appear in the Pocket menu
-
-Save files are created automatically on first use.
-EOF
-
-# ── Crear ZIP ─────────────────────────────────────────────────────
-mkdir -p "$RELEASES"
-rm -f "$OUTPUT_ZIP" 2>/dev/null || true
-
-cd "$BUILD"
-zip -r "$OUTPUT_ZIP" \
-    Cores/ Assets/ Platforms/ INSTALL.txt \
-    -x "*.DS_Store" "Thumbs.db" 2>/dev/null
-cd "$SDK_DIR"
-
-echo -e "${GREEN}Package created: $OUTPUT_ZIP${RESET}"
-echo "  Size: $(du -h "$OUTPUT_ZIP" | cut -f1)"
-PKGSH
-    chmod +x "$PKG_SH"
-    ok "package_app.sh"
-else
-    warn "package_app.sh no modificado."
-fi
-
-# ══════════════════════════════════════════════════════════════════
-# RESUMEN FINAL
-# ══════════════════════════════════════════════════════════════════
-header "Resumen"
-
-info "Archivos creados:"
-find "$APP_DIR" | sed "s|$SCRIPT_DIR/||" | sort | while read -r line; do
-    if [[ -d "$SCRIPT_DIR/$line" ]]; then
-        echo -e "  ${BLU}${line}/${RST}"
-    else
-        echo "  $line"
-    fi
-done
-
-echo ""
-ok "Listo. Comandos disponibles:"
-echo -e "  ${YLW}make${RST}                             # compila y empaqueta $APP_NAME"
-echo -e "  ${YLW}make APP=$APP_NAME${RST}         # ídem explícito"
-echo -e "  ${YLW}make -C src/$APP_NAME${RST}      # compila solo la app"
-echo -e "  ${YLW}./package_app.sh${RST}                 # genera el ZIP distribuible"
-echo -e "  ${YLW}./package_app.sh $APP_NAME${RST} # ídem explícito"
-echo ""
+ok "App created successfully!"
+echo
+echo "  App source : src/$SNAME/"
+echo "  app.conf   : src/$SNAME/app.conf"
+echo "  Core output: $OUTPUT/"
+echo
+echo "Next steps:"
+echo "  1. Edit src/$SNAME/main.c with your application logic"
+echo "  2. make -C src/$SNAME      # recompile"
+echo "  3. make deploy             # deploy to SD card"
+echo "  4. ./package_app.sh        # package into a ZIP release"
+echo
