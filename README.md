@@ -1,4 +1,4 @@
-# openfpgaOS SDK
+# openfpgaOS SDK Maker
 
 Build games for the [Analogue Pocket](https://www.analogue.co/pocket) in C or C++.
 
