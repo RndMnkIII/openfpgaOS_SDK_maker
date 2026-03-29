@@ -17,6 +17,7 @@ AUTHOR="ThinkElastic"
 PLATFORM=""
 VERSION="1.0.0"
 DATE=$(date +%Y-%m-%d)
+DESCRIPTION=""
 SAVES=10
 SAVE_SIZE="0x40000"
 BATCH=0
@@ -52,6 +53,7 @@ while [[ $# -gt 0 ]]; do
         --short)       SHORT="$2"; shift 2 ;;
         --platform)    PLATFORM="$2"; shift 2 ;;
         --version)     VERSION="$2"; shift 2 ;;
+        --description) DESCRIPTION="$2"; shift 2 ;;
         --data)        DATA_FILES+=("$2"); shift 2 ;;
         --saves)       SAVES="$2"; shift 2 ;;
         --save-size)   SAVE_SIZE="$2"; shift 2 ;;
@@ -70,6 +72,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --name NAME         Game display name"
             echo "  --short SHORT       Short name, no spaces"
             echo "  --author AUTHOR     Core author [ThinkElastic]"
+            echo "  --description DESC  App description"
             echo "  --data PATH         Data file (repeatable)"
             echo "  --saves N           Number of save slots [10]"
             echo "  --save-size HEX     Max save size per slot [0x40000]"
@@ -126,7 +129,26 @@ if [[ $BATCH -eq 0 ]]; then
 
     default_short=$(derive_short "$NAME")
     SHORT=$(ask "Short name (no spaces)" "${SHORT:-$default_short}")
+
+    # ── Load app.conf defaults (after SHORT is known) ────────────────
+    _sname_lower="$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')"
+    _app_src_dir=""
+    for _try in "$SDK_ROOT/src/$SHORT" "$SDK_ROOT/src/$_sname_lower"; do
+        [[ -f "$_try/app.conf" ]] && { _app_src_dir="$_try"; break; }
+    done
+    if [[ -n "$_app_src_dir" ]]; then
+        source "$_app_src_dir/app.conf"
+        [[ -n "${APP_AUTHOR:-}"       && "$AUTHOR" == "ThinkElastic" ]] && AUTHOR="$APP_AUTHOR"
+        [[ -n "${APP_DESCRIPTION:-}"  && -z "$DESCRIPTION"           ]] && DESCRIPTION="$APP_DESCRIPTION"
+        [[ -n "${APP_VERSION:-}"      && "$VERSION" == "1.0.0"       ]] && VERSION="$APP_VERSION"
+        [[ -n "${APP_DATE_RELEASE:-}"                                 ]] && DATE="$APP_DATE_RELEASE"
+        [[ -n "${APP_PLATFORM:-}"     && -z "$PLATFORM"              ]] && PLATFORM="$APP_PLATFORM"
+        ok "Loaded config: $_app_src_dir/app.conf"
+    fi
+    unset _app_src_dir _sname_lower
+
     AUTHOR=$(ask "Author" "$AUTHOR")
+    DESCRIPTION=$(ask "Description" "${DESCRIPTION:-$NAME on openfpgaOS}")
     VERSION=$(ask "Version" "$VERSION")
     [[ -z "$PLATFORM" ]] && PLATFORM=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
     PLATFORM=$(ask "Platform ID" "$PLATFORM")
@@ -164,15 +186,16 @@ if [[ $BATCH -eq 0 ]]; then
     # Summary
     echo
     echo -e "${CYAN}--- Summary ---${RESET}"
-    echo "  Name:      $NAME"
-    echo "  Short:     $SHORT"
-    echo "  Author:    $AUTHOR"
-    echo "  Version:   $VERSION"
+    echo "  Name:        $NAME"
+    echo "  Short:       $SHORT"
+    echo "  Author:      $AUTHOR"
+    echo "  Description: $DESCRIPTION"
+    echo "  Version:     $VERSION"
     for df in "${DATA_FILES[@]}"; do
-        echo "  Data:      $(basename "$df")"
+        echo "  Data:        $(basename "$df")"
     done
-    echo "  Saves:     $SAVES × $SAVE_SIZE"
-    echo "  Output:    $OUTPUT"
+    echo "  Saves:       $SAVES × $SAVE_SIZE"
+    echo "  Output:      $OUTPUT"
     echo
 
     read -rp "Proceed? [Y/n] " confirm
@@ -184,6 +207,27 @@ fi
 [[ -z "$SHORT" ]] && SHORT=$(derive_short "$NAME")
 [[ -z "$PLATFORM" ]] && PLATFORM=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
 [[ -z "$OUTPUT" ]] && OUTPUT="dist/$SHORT"
+
+# ── Load app.conf for batch mode (fills values not set by flags) ───
+if [[ $BATCH -eq 1 ]]; then
+    _sname_lower="$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')"
+    _app_conf=""
+    for _try in "$SDK_ROOT/src/$SHORT/app.conf" "$SDK_ROOT/src/$_sname_lower/app.conf"; do
+        [[ -f "$_try" ]] && { _app_conf="$_try"; break; }
+    done
+    if [[ -n "$_app_conf" ]]; then
+        source "$_app_conf"
+        [[ -n "${APP_AUTHOR:-}"       && "$AUTHOR" == "ThinkElastic" ]] && AUTHOR="$APP_AUTHOR"
+        [[ -n "${APP_DESCRIPTION:-}"  && -z "$DESCRIPTION"           ]] && DESCRIPTION="$APP_DESCRIPTION"
+        [[ -n "${APP_VERSION:-}"      && "$VERSION" == "1.0.0"       ]] && VERSION="$APP_VERSION"
+        [[ -n "${APP_DATE_RELEASE:-}"                                 ]] && DATE="$APP_DATE_RELEASE"
+        [[ -n "${APP_PLATFORM:-}"     && -z "$PLATFORM"              ]] && PLATFORM="$APP_PLATFORM"
+        ok "Loaded config: $_app_conf"
+    fi
+    unset _app_conf _sname_lower
+fi
+
+[[ -z "$DESCRIPTION" ]] && DESCRIPTION="$NAME on openfpgaOS"
 
 CORE_ID="${AUTHOR}.${SHORT}"
 
@@ -276,7 +320,7 @@ cat > "$CORE_DIR/core.json" << ENDJSON
         "metadata": {
             "platform_ids": ["$PLATFORM"],
             "shortname": "$SHORT",
-            "description": "$NAME on openfpgaOS",
+            "description": "$DESCRIPTION",
             "author": "$AUTHOR",
             "url": "",
             "version": "$VERSION",
@@ -383,10 +427,10 @@ if [[ -n "$DIST_DIR" ]]; then
     # Platform files — copy existing or generate (don't overwrite)
     if [[ -f "$PLATFORMS_DIR/${PLATFORM}.json" ]]; then
         ok "Platform JSON already exists, skipping"
-    elif [[ -f "$DIST_DIR/platforms/${PLATFORM}.json" ]]; then
-        cp "$DIST_DIR/platforms/${PLATFORM}.json" "$PLATFORMS_DIR/"
-        [[ -f "$DIST_DIR/platforms/_images/${PLATFORM}.bin" ]] && \
-            cp "$DIST_DIR/platforms/_images/${PLATFORM}.bin" "$PLATFORMS_DIR/_images/"
+    elif [[ -f "$SDK_ROOT/dist/sdk/platform/${PLATFORM}.json" ]]; then
+        cp "$SDK_ROOT/dist/sdk/platform/${PLATFORM}.json" "$PLATFORMS_DIR/"
+        [[ -f "$SDK_ROOT/dist/sdk/platform/_images/${PLATFORM}.bin" ]] && \
+            cp "$SDK_ROOT/dist/sdk/platform/_images/${PLATFORM}.bin" "$PLATFORMS_DIR/_images/"
         ok "Copied platform files"
     else
         # Generate platform JSON for standalone core
@@ -404,6 +448,65 @@ PLATJSON
     fi
 else
     warn "dist/ not found — audio/video/input/interact/variants JSONs not copied"
+fi
+
+# ── Update dist/sdk/core/core.json with app-specific metadata ─────
+SDK_DIST_CORE="$SDK_ROOT/dist/sdk/core"
+if [[ -d "$SDK_DIST_CORE" ]]; then
+    cat > "$SDK_DIST_CORE/core.json" << ENDJSON
+{
+    "core": {
+        "magic": "APF_VER_1",
+        "metadata": {
+            "platform_ids": [
+                "$PLATFORM"
+            ],
+            "shortname": "$SHORT",
+            "description": "$DESCRIPTION",
+            "author": "$AUTHOR",
+            "url": "",
+            "version": "$VERSION",
+            "date_release": "$DATE"
+        },
+        "framework": {
+            "target_product": "Analogue Pocket",
+            "version_required": "2.2",
+            "sleep_supported": false,
+            "dock": { "supported": true, "analog_output": false },
+            "hardware": { "link_port": true, "cartridge_adapter": 0 }
+        },
+        "cores": [
+            { "name": "default", "id": 0, "filename": "bitstream.rbf_r", "chip32_vm": "loader.bin" }
+        ]
+    }
+}
+ENDJSON
+    ok "Updated dist/sdk/core/core.json"
+fi
+
+# ── Update dist/sdk/platform/ with app-specific platform files ────
+SDK_DIST_PLATFORM="$SDK_ROOT/dist/sdk/platform"
+mkdir -p "$SDK_DIST_PLATFORM/_images"
+
+if [[ ! -f "$SDK_DIST_PLATFORM/${PLATFORM}.json" ]]; then
+    cat > "$SDK_DIST_PLATFORM/${PLATFORM}.json" << PLATJSON
+{
+    "platform": {
+        "category": "Computer",
+        "name": "$NAME",
+        "year": $(date +%Y),
+        "manufacturer": "$AUTHOR"
+    }
+}
+PLATJSON
+    ok "Generated dist/sdk/platform/${PLATFORM}.json"
+else
+    ok "dist/sdk/platform/${PLATFORM}.json already exists, skipping"
+fi
+
+if [[ -n "$ICON" && -f "$ICON" && ! -f "$SDK_DIST_PLATFORM/_images/${PLATFORM}.bin" ]]; then
+    cp "$ICON" "$SDK_DIST_PLATFORM/_images/${PLATFORM}.bin"
+    ok "Copied ${PLATFORM}.bin to dist/sdk/platform/_images/"
 fi
 
 # ── Copy bitstream ─────────────────────────────────────────────────
