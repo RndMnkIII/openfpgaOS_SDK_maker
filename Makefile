@@ -62,7 +62,7 @@ clean:
 
 # ── Core packaging ───────────────────────────────────────────────
 core:
-	./scripts/customize.sh
+	./create_app.sh
 
 package:
 	./scripts/package.sh
