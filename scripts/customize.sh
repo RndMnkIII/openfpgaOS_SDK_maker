@@ -232,6 +232,18 @@ else
     ok "App source exists: $APP_SRC_DIR/"
 fi
 
+# ── Load app metadata from app.conf if it exists ─────────────────
+APP_CONF="$APP_SRC_DIR/app.conf"
+if [[ -f "$APP_CONF" ]]; then
+    # shellcheck disable=SC1090
+    source "$APP_CONF"
+    # DATE_RELEASE from app.conf maps to DATE used in core.json
+    [[ -n "${DATE_RELEASE:-}" ]] && DATE="$DATE_RELEASE"
+    # Recompute CORE_ID in case AUTHOR or SHORT changed
+    CORE_ID="${AUTHOR}.${SHORT}"
+    ok "Loaded metadata from app.conf"
+fi
+
 SNAME=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
 ELF_NAME="${SNAME}.elf"
 
@@ -276,7 +288,7 @@ cat > "$CORE_DIR/core.json" << ENDJSON
         "metadata": {
             "platform_ids": ["$PLATFORM"],
             "shortname": "$SHORT",
-            "description": "$NAME on openfpgaOS",
+            "description": "${DESCRIPTION:-$NAME on openfpgaOS}",
             "author": "$AUTHOR",
             "url": "",
             "version": "$VERSION",

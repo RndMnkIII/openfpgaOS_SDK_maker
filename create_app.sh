@@ -36,6 +36,9 @@ APP_NAME=""
 LIB_NAME=""
 CORE_ID=""
 PLATFORM=""
+DESCRIPTION=""
+VERSION=""
+DATE_RELEASE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,6 +57,21 @@ while [[ $# -gt 0 ]]; do
             PLATFORM="$2"
             shift 2
             ;;
+        --description)
+            [[ -n "$2" ]] || error "--description requiere un valor"
+            DESCRIPTION="$2"
+            shift 2
+            ;;
+        --version)
+            [[ -n "$2" ]] || error "--version requiere un valor"
+            VERSION="$2"
+            shift 2
+            ;;
+        --date-release)
+            [[ -n "$2" ]] || error "--date-release requiere un valor"
+            DATE_RELEASE="$2"
+            shift 2
+            ;;
         -*)
             error "Opción desconocida: $1"
             ;;
@@ -65,7 +83,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$APP_NAME" ]] || error "Uso: $0 <nombre_app> [--lib <nombre_lib>] [--core-id <id>] [--platform <nombre>]"
+[[ -n "$APP_NAME" ]] || error "Uso: $0 <nombre_app> [--lib <nombre_lib>] [--core-id <id>] [--platform <nombre>] [--description <desc>] [--version <ver>] [--date-release <fecha>]"
 
 [[ "$APP_NAME" =~ ^[a-zA-Z0-9_]+$ ]] || \
     error "El nombre solo puede contener letras, números y guiones bajos"
@@ -119,10 +137,39 @@ if [[ -z "$PLATFORM" ]]; then
     [[ -z "$PLATFORM" ]] && PLATFORM="$DEFAULT_PLATFORM"
 fi
 
+# ── Preguntar Description si no se pasó por argumento ────────────
+if [[ -z "$DESCRIPTION" ]]; then
+    ask "Descripción de la app (p.e., My Cool Game): "
+    read -r DESCRIPTION
+    [[ -z "$DESCRIPTION" ]] && DESCRIPTION="$APP_NAME"
+fi
+
+# ── Preguntar Version si no se pasó por argumento ─────────────────
+if [[ -z "$VERSION" ]]; then
+    ask "Versión inicial (p.e., 0.1): "
+    read -r VERSION
+    [[ -z "$VERSION" ]] && VERSION="0.1"
+fi
+
+# ── Preguntar Date Release si no se pasó por argumento ───────────
+DEFAULT_DATE=$(date +%Y-%m-%d)
+if [[ -z "$DATE_RELEASE" ]]; then
+    ask "Fecha de lanzamiento (p.e., $DEFAULT_DATE): "
+    read -r DATE_RELEASE
+    [[ -z "$DATE_RELEASE" ]] && DATE_RELEASE="$DEFAULT_DATE"
+fi
+
+# ── Extraer author de CORE_ID (parte antes del primer punto) ──────
+AUTHOR="${CORE_ID%%.*}"
+
 echo ""
 info "App      : $APP_NAME"
 info "Core ID  : $CORE_ID"
 info "Platform : $PLATFORM"
+info "Author   : $AUTHOR"
+info "Desc     : $DESCRIPTION"
+info "Version  : $VERSION"
+info "Release  : $DATE_RELEASE"
 info "SDK      : $(realpath --relative-to="$SCRIPT_DIR" "$SDK_ABS")"
 [[ -n "$LIB_NAME" ]] && info "Lib      : $LIB_NAME"
 info "Destino  : src/$APP_NAME/"
@@ -137,6 +184,19 @@ header "Creando src/$APP_NAME/"
 
 mkdir -p "$APP_DIR"
 [[ -n "$LIB_NAME" ]] && mkdir -p "$APP_DIR/$LIB_NAME/include" "$APP_DIR/$LIB_NAME/src"
+
+# ── Generar app.conf ──────────────────────────────────────────────
+cat > "$APP_DIR/app.conf" << APPCONF
+# app.conf — Metadatos de la app para core.json
+# Generado por create_app.sh — edita según necesites
+AUTHOR="${AUTHOR}"
+SHORT="${APP_NAME}"
+PLATFORM="${PLATFORM}"
+DESCRIPTION="${DESCRIPTION}"
+VERSION="${VERSION}"
+DATE_RELEASE="${DATE_RELEASE}"
+APPCONF
+ok "src/$APP_NAME/app.conf"
 
 # ── Makefile de la app ────────────────────────────────────────────
 if [[ -n "$LIB_NAME" ]]; then
