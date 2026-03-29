@@ -518,9 +518,10 @@ ok "src/$SNAME/app.conf"
 # ── Distribution directory structure ─────────────────────────────
 CORE_DIR="$OUTPUT/Cores/$CORE_ID"
 ASSETS_COMMON="$OUTPUT/Assets/$PLATFORM/common"
+ASSETS_INSTANCES="$OUTPUT/Assets/$PLATFORM/$CORE_ID"
 PLATFORMS_DIR="$OUTPUT/Platforms"
 
-mkdir -p "$CORE_DIR" "$ASSETS_COMMON" "$PLATFORMS_DIR/_images"
+mkdir -p "$CORE_DIR" "$ASSETS_COMMON" "$ASSETS_INSTANCES" "$PLATFORMS_DIR/_images"
 
 # ── core.json ─────────────────────────────────────────────────────
 if [[ -f "$CORE_DIR/core.json" ]]; then
@@ -713,6 +714,10 @@ if [[ ! -f "$INSTANCE_JSON" ]]; then
 JSON
     ok "src/$SNAME/${SNAME}.json"
 fi
+
+# Deploy instance JSON to Assets/<platform>/<CORE_ID>/
+cp "$INSTANCE_JSON" "$ASSETS_INSTANCES/${SNAME}.json"
+ok "Copied ${SNAME}.json to Assets/$PLATFORM/$CORE_ID/"
 
 # ══════════════════════════════════════════════════════════════════
 # Final summary
