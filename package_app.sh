@@ -40,9 +40,85 @@ if [ ! -d "$SDK_DIR/src/$APP_NAME" ]; then
     exit 1
 fi
 
+# ── Leer metadatos de app.conf ────────────────────────────────────
+APP_CONF="$SDK_DIR/src/$APP_NAME/app.conf"
+read_conf() { grep -E "^$1=" "$APP_CONF" 2>/dev/null | head -1 | sed "s/$1=//"; }
+PLATFORM=""
+AUTHOR=""
+SHORT=""
+if [ -f "$APP_CONF" ]; then
+    PLATFORM=$(read_conf PLATFORM)
+    AUTHOR=$(read_conf AUTHOR)
+    SHORT=$(read_conf SHORT)
+fi
+[ -z "$PLATFORM" ] && PLATFORM="raytracertnw"
+[ -z "$SHORT" ] && SHORT="raytracerTNW"
+[ -z "$AUTHOR" ] && AUTHOR="RndMnkIII"
+CORE_ID="${AUTHOR}.${SHORT}"
+
 # ── Build ─────────────────────────────────────────────────────────
 echo "  Building release..."
-make -C "$SDK_DIR" release APP="$APP_NAME"
+if grep -qE '^release[[:space:]]*:' "$SDK_DIR/Makefile" 2>/dev/null; then
+    make -C "$SDK_DIR" release APP="$APP_NAME"
+else
+    echo -e "${YELLOW}  No 'release' target in Makefile — building app and packaging manually.${RESET}"
+    make -C "$SDK_DIR" APP="$APP_NAME" 2>/dev/null || make -C "$SDK_DIR"
+
+    RUNTIME="$SDK_DIR/runtime"
+    REL_CORE_DIR="$BUILD/Cores/$CORE_ID"
+    REL_ASSETS_DIR="$BUILD/Assets/$PLATFORM/common"
+    REL_INSTANCE_DIR="$BUILD/Assets/$PLATFORM/$CORE_ID"
+    REL_PLATFORM_DIR="$BUILD/Platforms"
+
+    mkdir -p "$REL_CORE_DIR" "$REL_ASSETS_DIR" "$REL_INSTANCE_DIR" "$REL_PLATFORM_DIR/_images"
+
+    # Copy runtime files
+    [ -f "$RUNTIME/bitstream.rbf_r" ] && cp "$RUNTIME/bitstream.rbf_r" "$REL_CORE_DIR/"
+    [ -f "$RUNTIME/loader.bin" ]      && cp "$RUNTIME/loader.bin"      "$REL_CORE_DIR/"
+
+    # Copy core metadata (new-style dist first, then legacy dist/sdk)
+    DIST_CORE_SRC="$SDK_DIR/dist/$SHORT/Cores/$CORE_ID"
+    DIST_CORE_LEGACY="$SDK_DIR/dist/sdk/core"
+    if [ -d "$DIST_CORE_SRC" ]; then
+        cp "$DIST_CORE_SRC"/*.json "$REL_CORE_DIR/" 2>/dev/null || true
+        cp "$DIST_CORE_SRC"/*.bin  "$REL_CORE_DIR/" 2>/dev/null || true
+    elif [ -d "$DIST_CORE_LEGACY" ]; then
+        cp "$DIST_CORE_LEGACY"/*.json "$REL_CORE_DIR/" 2>/dev/null || true
+        cp "$DIST_CORE_LEGACY"/*.bin  "$REL_CORE_DIR/" 2>/dev/null || true
+    fi
+
+    # Copy platform metadata
+    DIST_PLAT_SRC="$SDK_DIR/dist/$SHORT/Platforms"
+    DIST_PLAT_LEGACY="$SDK_DIR/dist/sdk/platform"
+    if [ -d "$DIST_PLAT_SRC" ]; then
+        cp "$DIST_PLAT_SRC"/*.json "$REL_PLATFORM_DIR/" 2>/dev/null || true
+        [ -d "$DIST_PLAT_SRC/_images" ] && \
+            cp "$DIST_PLAT_SRC/_images"/*.bin "$REL_PLATFORM_DIR/_images/" 2>/dev/null || true
+    elif [ -d "$DIST_PLAT_LEGACY" ]; then
+        cp "$DIST_PLAT_LEGACY"/*.json "$REL_PLATFORM_DIR/" 2>/dev/null || true
+        [ -d "$DIST_PLAT_LEGACY/_images" ] && \
+            cp "$DIST_PLAT_LEGACY/_images"/*.bin "$REL_PLATFORM_DIR/_images/" 2>/dev/null || true
+    fi
+
+    # Copy OS binary
+    [ -f "$RUNTIME/os.bin" ] && cp "$RUNTIME/os.bin" "$REL_ASSETS_DIR/"
+
+    # Copy ELF (rename app.elf -> $APP_NAME.elf if needed)
+    ELF_SRC="$SDK_DIR/src/$APP_NAME/${APP_NAME}.elf"
+    if [ ! -f "$ELF_SRC" ] && [ -f "$SDK_DIR/src/$APP_NAME/app.elf" ]; then
+        cp "$SDK_DIR/src/$APP_NAME/app.elf" "$ELF_SRC"
+    fi
+    [ -f "$ELF_SRC" ] && cp "$ELF_SRC" "$REL_ASSETS_DIR/"
+
+    # Copy data files
+    find "$SDK_DIR/src/$APP_NAME" -maxdepth 1 \
+        \( -name "*.mid" -o -name "*.wav" -o -name "*.dat" -o -name "*.png" \) \
+        -exec cp {} "$REL_ASSETS_DIR/" \; 2>/dev/null || true
+
+    # Copy instance JSON
+    [ -f "$SDK_DIR/src/$APP_NAME/${APP_NAME}.json" ] && \
+        cp "$SDK_DIR/src/$APP_NAME/${APP_NAME}.json" "$REL_INSTANCE_DIR/" || true
+fi
 
 # ── Verificar build ───────────────────────────────────────────────
 if [ ! -d "$BUILD/Cores" ]; then
@@ -91,7 +167,7 @@ echo "  Output  : $OUTPUT_ZIP"
 echo
 
 # ── Verificar ELF ─────────────────────────────────────────────────
-REL_ASSETS="$BUILD/Assets/raytracertnw/common"
+REL_ASSETS="$BUILD/Assets/$PLATFORM/common"
 if [ ! -f "$REL_ASSETS/${APP_NAME}.elf" ]; then
     echo -e "${RED}Error: ${APP_NAME}.elf no encontrado en $REL_ASSETS/${RESET}"
     exit 1

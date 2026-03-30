@@ -11,15 +11,26 @@
 # ── App (override: make APP=otra_app) ────────────────────────────
 APP ?= RayTracingTheNextWeek
 
+# ── Read per-app metadata from app.conf if present ───────────────
+-include src/$(APP)/app.conf
+
+# ── Core identifiers (fallback defaults for RayTracingTheNextWeek) ─
+AUTHOR   ?= RndMnkIII
+SHORT    ?= raytracerTNW
+PLATFORM ?= raytracertnw
+CORE_ID  ?= $(AUTHOR).$(SHORT)
+
 # ── Paths ────────────────────────────────────────────────────────
-CORE_ID      = RndMnkIII.raytracerTNW
-PLATFORM     = raytracertnw
 RELEASE      = build/sdk
 REL_CORE     = $(RELEASE)/Cores/$(CORE_ID)
 REL_ASSETS   = $(RELEASE)/Assets/$(PLATFORM)/common
 REL_INSTANCE = $(RELEASE)/Assets/$(PLATFORM)/$(CORE_ID)
 REL_PLATFORM = $(RELEASE)/Platforms
 RUNTIME      = runtime
+
+# ── Dist source: new apps use dist/$(SHORT)/, legacy uses dist/sdk ─
+DIST_CORE    = $(or $(wildcard dist/$(SHORT)/Cores/$(CORE_ID)),dist/sdk/core)
+DIST_PLATFORM = $(or $(wildcard dist/$(SHORT)/Platforms),dist/sdk/platform)
 
 # ── Default target ───────────────────────────────────────────────
 all: app tools release
@@ -36,9 +47,9 @@ release: app
 	@mkdir -p $(REL_CORE) $(REL_ASSETS) $(REL_INSTANCE) $(REL_PLATFORM)/_images
 	@cp $(RUNTIME)/bitstream.rbf_r $(REL_CORE)/
 	@cp $(RUNTIME)/loader.bin $(REL_CORE)/
-	@[ -d dist/sdk/core ] && cp dist/sdk/core/*.json dist/sdk/core/*.bin $(REL_CORE)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform ] && cp dist/sdk/platform/*.json $(REL_PLATFORM)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform/_images ] && cp dist/sdk/platform/_images/*.bin $(REL_PLATFORM)/_images/ 2>/dev/null || true
+	@[ -d "$(DIST_CORE)" ] && cp "$(DIST_CORE)"/*.json "$(DIST_CORE)"/*.bin $(REL_CORE)/ 2>/dev/null || true
+	@[ -d "$(DIST_PLATFORM)" ] && cp "$(DIST_PLATFORM)"/*.json $(REL_PLATFORM)/ 2>/dev/null || true
+	@[ -d "$(DIST_PLATFORM)/_images" ] && cp "$(DIST_PLATFORM)/_images"/*.bin $(REL_PLATFORM)/_images/ 2>/dev/null || true
 	@cp $(RUNTIME)/os.bin $(REL_ASSETS)/
 	@cp src/$(APP)/$(APP).elf $(REL_ASSETS)/
 	@find src/$(APP) -maxdepth 1 \( -name "*.mid" -o -name "*.wav" -o -name "*.dat" -o -name "*.png" \) \
