@@ -101,13 +101,11 @@ mkdir -p "$REL_CORE" "$REL_ASSETS" "$REL_INSTANCE" "$REL_PLATFORM_DIR/_images"
     find "$SDK_DIR/dist/sdk/core" -maxdepth 1 \( -name "*.json" -o -name "*.bin" \) \
         -exec cp {} "$REL_CORE/" \; 2>/dev/null || true
 
-# Archivos de plataforma desde dist/sdk/platform/
-[ -d "$SDK_DIR/dist/sdk/platform" ] && \
-    find "$SDK_DIR/dist/sdk/platform" -maxdepth 1 -name "*.json" \
-        -exec cp {} "$REL_PLATFORM_DIR/" \; 2>/dev/null || true
-[ -d "$SDK_DIR/dist/sdk/platform/_images" ] && \
-    find "$SDK_DIR/dist/sdk/platform/_images" -maxdepth 1 -name "*.bin" \
-        -exec cp {} "$REL_PLATFORM_DIR/_images/" \; 2>/dev/null || true
+# Archivos de plataforma desde dist/sdk/platform/ (solo el archivo de la plataforma actual)
+[ -f "$SDK_DIR/dist/sdk/platform/${PLATFORM}.json" ] && \
+    cp "$SDK_DIR/dist/sdk/platform/${PLATFORM}.json" "$REL_PLATFORM_DIR/" 2>/dev/null || true
+[ -f "$SDK_DIR/dist/sdk/platform/_images/${PLATFORM}.bin" ] && \
+    cp "$SDK_DIR/dist/sdk/platform/_images/${PLATFORM}.bin" "$REL_PLATFORM_DIR/_images/" 2>/dev/null || true
 
 # ELF y datos de la app
 cp "$SDK_DIR/src/$APP_NAME/$APP_NAME.elf" "$REL_ASSETS/"

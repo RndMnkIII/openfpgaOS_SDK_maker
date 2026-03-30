@@ -37,8 +37,8 @@ release: app
 	@cp $(RUNTIME)/bitstream.rbf_r $(REL_CORE)/
 	@cp $(RUNTIME)/loader.bin $(REL_CORE)/
 	@[ -d dist/sdk/core ] && cp dist/sdk/core/*.json dist/sdk/core/*.bin $(REL_CORE)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform ] && cp dist/sdk/platform/*.json $(REL_PLATFORM)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform/_images ] && cp dist/sdk/platform/_images/*.bin $(REL_PLATFORM)/_images/ 2>/dev/null || true
+	@[ -f dist/sdk/platform/$(PLATFORM).json ] && cp dist/sdk/platform/$(PLATFORM).json $(REL_PLATFORM)/ 2>/dev/null || true
+	@[ -f dist/sdk/platform/_images/$(PLATFORM).bin ] && cp dist/sdk/platform/_images/$(PLATFORM).bin $(REL_PLATFORM)/_images/ 2>/dev/null || true
 	@cp $(RUNTIME)/os.bin $(REL_ASSETS)/
 	@cp src/$(APP)/$(APP).elf $(REL_ASSETS)/
 	@find src/$(APP) -maxdepth 1 \( -name "*.mid" -o -name "*.wav" -o -name "*.dat" -o -name "*.png" \) \
