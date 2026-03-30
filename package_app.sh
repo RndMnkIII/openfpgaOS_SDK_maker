@@ -3,7 +3,7 @@
 # openfpgaOS SDK — App Packager
 #
 # Usage:
-#   ./package_app.sh                 Package the default app (APP ?= en Makefile)
+#   ./package_app.sh                 Package the default app (first app found in src/)
 #   ./package_app.sh myapp           Package src/myapp/
 #   APP=myapp ./package_app.sh       Same, via environment variable
 #
@@ -17,20 +17,27 @@ RESET='\033[0m'
 
 SDK_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# ── Resolver APP: argumento > variable de entorno > default del Makefile ──
+# ── Resolver APP: argumento > variable de entorno > primera app en src/ ──
 APP_NAME="${1:-${APP:-}}"
 
 if [ -z "$APP_NAME" ]; then
-    APP_NAME=$(grep -E '^APP\s*\?=' "$SDK_DIR/Makefile" 2>/dev/null \
-        | head -1 | sed 's/.*=\s*//' | tr -d '[:space:]')
+    for d in "$SDK_DIR/src"/*/; do
+        name=$(basename "$d")
+        case "$name" in apps|sdk|tools) continue ;; esac
+        if [ -f "$d/Makefile" ]; then
+            APP_NAME="$name"
+            break
+        fi
+    done
     [ -z "$APP_NAME" ] && {
-        echo -e "${RED}Error: no se encuentra APP ?= en el Makefile.${RESET}"
+        echo -e "${RED}Error: no se encontró ninguna app en src/. Usa: $0 <app_name>${RESET}"
         exit 1
     }
 fi
 
 BUILD="$SDK_DIR/build/sdk"
 RELEASES="$SDK_DIR/releases"
+RUNTIME="$SDK_DIR/runtime"
 
 echo -e "${CYAN}=== App Packager (APP=$APP_NAME) ===${RESET}"
 
@@ -40,24 +47,86 @@ if [ ! -d "$SDK_DIR/src/$APP_NAME" ]; then
     exit 1
 fi
 
-# ── Build ─────────────────────────────────────────────────────────
-echo "  Building release..."
-make -C "$SDK_DIR" release APP="$APP_NAME"
+# ── Leer CORE_ID y PLATFORM desde dist/sdk/core/core.json ────────
+DIST_CORE_JSON="$SDK_DIR/dist/sdk/core/core.json"
+[ -f "$DIST_CORE_JSON" ] || {
+    echo -e "${RED}Error: $DIST_CORE_JSON no encontrado.${RESET}"
+    exit 1
+}
+
+_CORE_META=$(python3 -c "
+import json, sys
+with open('$DIST_CORE_JSON') as f:
+    d = json.load(f)
+m = d['core']['metadata']
+ids = m.get('platform_ids', [])
+print(m['author'])
+print(m['shortname'])
+print(ids[0] if ids else '')
+" 2>/dev/null)
+
+CORE_AUTHOR=$(echo "$_CORE_META"   | sed -n '1p')
+CORE_SHORTNAME=$(echo "$_CORE_META" | sed -n '2p')
+PLATFORM=$(echo "$_CORE_META"      | sed -n '3p')
+
+CORE_ID="${CORE_AUTHOR}.${CORE_SHORTNAME}"
+[ -z "$CORE_AUTHOR" ] || [ -z "$CORE_SHORTNAME" ] || [ -z "$PLATFORM" ] && {
+    echo -e "${RED}Error: no se pueden leer metadatos del core desde $DIST_CORE_JSON.${RESET}"
+    exit 1
+}
+
+# ── Rutas de release ──────────────────────────────────────────────
+REL_CORE="$BUILD/Cores/$CORE_ID"
+REL_ASSETS="$BUILD/Assets/$PLATFORM/common"
+REL_INSTANCE="$BUILD/Assets/$PLATFORM/$CORE_ID"
+REL_PLATFORM_DIR="$BUILD/Platforms"
+
+# ── Build app ─────────────────────────────────────────────────────
+echo "  Building $APP_NAME..."
+make -C "$SDK_DIR/src/$APP_NAME" SDK_DIR="$SDK_DIR/src/sdk"
+[ -f "$SDK_DIR/src/$APP_NAME/app.elf" ] && \
+    mv "$SDK_DIR/src/$APP_NAME/app.elf" "$SDK_DIR/src/$APP_NAME/$APP_NAME.elf" 2>/dev/null || true
+
+# ── Crear estructura de release ───────────────────────────────────
+echo "  Creating release structure..."
+mkdir -p "$REL_CORE" "$REL_ASSETS" "$REL_INSTANCE" "$REL_PLATFORM_DIR/_images"
+
+# Archivos de runtime
+[ -f "$RUNTIME/bitstream.rbf_r" ] && cp "$RUNTIME/bitstream.rbf_r" "$REL_CORE/"
+[ -f "$RUNTIME/loader.bin" ]      && cp "$RUNTIME/loader.bin"      "$REL_CORE/"
+[ -f "$RUNTIME/os.bin" ]          && cp "$RUNTIME/os.bin"          "$REL_ASSETS/"
+
+# Archivos de configuración del core desde dist/sdk/core/
+[ -d "$SDK_DIR/dist/sdk/core" ] && \
+    find "$SDK_DIR/dist/sdk/core" -maxdepth 1 \( -name "*.json" -o -name "*.bin" \) \
+        -exec cp {} "$REL_CORE/" \; 2>/dev/null || true
+
+# Archivos de plataforma desde dist/sdk/platform/
+[ -d "$SDK_DIR/dist/sdk/platform" ] && \
+    find "$SDK_DIR/dist/sdk/platform" -maxdepth 1 -name "*.json" \
+        -exec cp {} "$REL_PLATFORM_DIR/" \; 2>/dev/null || true
+[ -d "$SDK_DIR/dist/sdk/platform/_images" ] && \
+    find "$SDK_DIR/dist/sdk/platform/_images" -maxdepth 1 -name "*.bin" \
+        -exec cp {} "$REL_PLATFORM_DIR/_images/" \; 2>/dev/null || true
+
+# ELF y datos de la app
+cp "$SDK_DIR/src/$APP_NAME/$APP_NAME.elf" "$REL_ASSETS/"
+find "$SDK_DIR/src/$APP_NAME" -maxdepth 1 \
+    \( -name "*.mid" -o -name "*.wav" -o -name "*.dat" -o -name "*.png" \) \
+    -exec cp {} "$REL_ASSETS/" \; 2>/dev/null || true
+
+# JSON de instancia (si existe)
+[ -f "$SDK_DIR/src/$APP_NAME/$APP_NAME.json" ] && \
+    cp "$SDK_DIR/src/$APP_NAME/$APP_NAME.json" "$REL_INSTANCE/" || true
 
 # ── Verificar build ───────────────────────────────────────────────
 if [ ! -d "$BUILD/Cores" ]; then
-    echo -e "${RED}Error: build/sdk/ no encontrado tras make release.${RESET}"
+    echo -e "${RED}Error: build/sdk/ no encontrado tras crear release.${RESET}"
     exit 1
 fi
 
 # ── Leer metadatos del core.json ──────────────────────────────────
-CORE_NAME=$(ls "$BUILD/Cores/" 2>/dev/null | head -1)
-[ -z "$CORE_NAME" ] && {
-    echo -e "${RED}Error: no se encuentra ningún core en build/sdk/Cores/.${RESET}"
-    exit 1
-}
-
-CORE_JSON="$BUILD/Cores/$CORE_NAME/core.json"
+CORE_JSON="$REL_CORE/core.json"
 [ -f "$CORE_JSON" ] || {
     echo -e "${RED}Error: $CORE_JSON no encontrado.${RESET}"
     exit 1
@@ -91,7 +160,6 @@ echo "  Output  : $OUTPUT_ZIP"
 echo
 
 # ── Verificar ELF ─────────────────────────────────────────────────
-REL_ASSETS="$BUILD/Assets/raytracertnw/common"
 if [ ! -f "$REL_ASSETS/${APP_NAME}.elf" ]; then
     echo -e "${RED}Error: ${APP_NAME}.elf no encontrado en $REL_ASSETS/${RESET}"
     exit 1
