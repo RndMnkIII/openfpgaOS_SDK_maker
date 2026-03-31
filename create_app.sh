@@ -659,6 +659,59 @@ else
     fi
 fi
 
+# ── Sincronizar dist/sdk/ con los metadatos de la nueva app ──────
+DIST_SDK_CORE_JSON="$SCRIPT_DIR/dist/sdk/core/core.json"
+if [[ -f "$DIST_SDK_CORE_JSON" ]]; then
+    python3 -c "
+import json, sys
+path, platform, short, author, desc, ver, date = sys.argv[1:]
+try:
+    with open(path) as f:
+        d = json.load(f)
+    m = d['core']['metadata']
+    m['platform_ids'] = [platform]
+    m['shortname'] = short
+    m['author'] = author
+    m['description'] = desc
+    m['version'] = ver
+    m['date_release'] = date
+    with open(path, 'w') as f:
+        json.dump(d, f, indent=4)
+except (KeyError, TypeError) as e:
+    sys.exit(f'Error updating {path}: missing key {e}')
+except Exception as e:
+    sys.exit(f'Error updating {path}: {e}')
+" "$DIST_SDK_CORE_JSON" "$PLATFORM" "$SHORT" "$AUTHOR" "$DESCRIPTION" "$VERSION" "$DATE"
+    ok "Updated dist/sdk/core/core.json"
+fi
+
+DIST_SDK_PLATFORM="$SCRIPT_DIR/dist/sdk/platform"
+mkdir -p "$DIST_SDK_PLATFORM/_images"
+if [[ -f "$PLATFORMS_DIR/${PLATFORM}.json" ]]; then
+    cp "$PLATFORMS_DIR/${PLATFORM}.json" "$DIST_SDK_PLATFORM/"
+    ok "Updated dist/sdk/platform/${PLATFORM}.json"
+fi
+if [[ -f "$PLATFORMS_DIR/_images/${PLATFORM}.bin" ]]; then
+    cp "$PLATFORMS_DIR/_images/${PLATFORM}.bin" "$DIST_SDK_PLATFORM/_images/"
+    ok "Updated dist/sdk/platform/_images/${PLATFORM}.bin"
+fi
+
+# ── Actualizar PLATFORM y CORE_ID en el Makefile raíz si ya existe ─
+ROOT_MK_EXISTING="$SCRIPT_DIR/Makefile"
+if [[ -f "$ROOT_MK_EXISTING" ]]; then
+    python3 -c "
+import re, sys
+path, platform, core_id = sys.argv[1:]
+with open(path) as f:
+    content = f.read()
+content = re.sub(r'^PLATFORM(\s*=\s*).*', lambda m: 'PLATFORM' + m.group(1) + platform, content, flags=re.MULTILINE)
+content = re.sub(r'^CORE_ID(\s*=\s*).*', lambda m: 'CORE_ID' + m.group(1) + core_id, content, flags=re.MULTILINE)
+with open(path, 'w') as f:
+    f.write(content)
+" "$ROOT_MK_EXISTING" "$PLATFORM" "$CORE_ID"
+    ok "Updated Makefile PLATFORM=$PLATFORM and CORE_ID=$CORE_ID"
+fi
+
 # ── Copy runtime files ────────────────────────────────────────────
 if [[ -f "$BITSTREAM" ]]; then
     cp "$BITSTREAM" "$CORE_DIR/bitstream.rbf_r"
@@ -826,13 +879,11 @@ mkdir -p "$REL_CORE" "$REL_ASSETS" "$REL_INSTANCE" "$REL_PLATFORM_DIR/_images"
     find "$SDK_DIR/dist/sdk/core" -maxdepth 1 \( -name "*.json" -o -name "*.bin" \) \
         -exec cp {} "$REL_CORE/" \; 2>/dev/null || true
 
-# Archivos de plataforma desde dist/sdk/platform/
-[ -d "$SDK_DIR/dist/sdk/platform" ] && \
-    find "$SDK_DIR/dist/sdk/platform" -maxdepth 1 -name "*.json" \
-        -exec cp {} "$REL_PLATFORM_DIR/" \; 2>/dev/null || true
-[ -d "$SDK_DIR/dist/sdk/platform/_images" ] && \
-    find "$SDK_DIR/dist/sdk/platform/_images" -maxdepth 1 -name "*.bin" \
-        -exec cp {} "$REL_PLATFORM_DIR/_images/" \; 2>/dev/null || true
+# Archivos de plataforma desde dist/sdk/platform/ (solo el archivo de la plataforma actual)
+[ -f "$SDK_DIR/dist/sdk/platform/${PLATFORM}.json" ] && \
+    cp "$SDK_DIR/dist/sdk/platform/${PLATFORM}.json" "$REL_PLATFORM_DIR/" 2>/dev/null || true
+[ -f "$SDK_DIR/dist/sdk/platform/_images/${PLATFORM}.bin" ] && \
+    cp "$SDK_DIR/dist/sdk/platform/_images/${PLATFORM}.bin" "$REL_PLATFORM_DIR/_images/" 2>/dev/null || true
 
 # ELF y datos de la app
 cp "$SDK_DIR/src/$APP_NAME/$APP_NAME.elf" "$REL_ASSETS/"
@@ -963,8 +1014,8 @@ release: app
 	@cp \$(RUNTIME)/bitstream.rbf_r \$(REL_CORE)/
 	@cp \$(RUNTIME)/loader.bin \$(REL_CORE)/
 	@[ -d dist/sdk/core ] && cp dist/sdk/core/*.json dist/sdk/core/*.bin \$(REL_CORE)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform ] && cp dist/sdk/platform/*.json \$(REL_PLATFORM)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform/_images ] && cp dist/sdk/platform/_images/*.bin \$(REL_PLATFORM)/_images/ 2>/dev/null || true
+	@[ -f dist/sdk/platform/\$(PLATFORM).json ] && cp dist/sdk/platform/\$(PLATFORM).json \$(REL_PLATFORM)/ 2>/dev/null || true
+	@[ -f dist/sdk/platform/_images/\$(PLATFORM).bin ] && cp dist/sdk/platform/_images/\$(PLATFORM).bin \$(REL_PLATFORM)/_images/ 2>/dev/null || true
 	@cp \$(RUNTIME)/os.bin \$(REL_ASSETS)/
 	@cp src/\$(APP)/\$(APP).elf \$(REL_ASSETS)/
 	@find src/\$(APP) -maxdepth 1 \( -name "*.mid" -o -name "*.wav" -o -name "*.dat" -o -name "*.png" \) \
